@@ -1,0 +1,11 @@
+controlplanesupernodes:
+- /dns4/swarm-agent-bootstrap-1/tcp/4443/p2p/QmQDYtAZ1Y2hu55FzQKCdJBcSH1YvfTNyhdNSai8zYj81X
+- /dns4/swarm-agent-bootstrap-2/tcp/4443/p2p/QmPHJo2Xs9rWB2v6JZepDWNVVfAwi7w7XwZ51pUcmyyGS6
+- /dns4/swarm-agent-bootstrap-3/tcp/4443/p2p/QmY19Nbzt8vJApDeqrQnf8aKzpKJgYMKJCHBvn1SNZwJR8
+- /dns4/swarm-agent-bootstrap-4/tcp/4443/p2p/QmR5mDNJiyxJGWGaeseWqxW2nZRtQkggpdsbukm4mf23ms
+dataplanesupernodes:
+- /dns4/swarm-agent-bootstrap-1/tcp/4001/p2p/QmbjsCaDngwwTPkmeuRWWRar5GfSqMzgQmbAdksy3UKENW
+- /dns4/swarm-agent-bootstrap-2/tcp/4001/p2p/QmVb4HRk3q7HJaMEe4PDTL756t219dqumu798cZ94CmG8M
+- /dns4/swarm-agent-bootstrap-3/tcp/4001/p2p/QmZbnUgC8XTyseFZCA7vr819r4iV1dfYF6qeSFXWk1CcXJ
+- /dns4/swarm-agent-bootstrap-4/tcp/4001/p2p/Qme8L1SAQH6gZHvoxYxiMTgurK4c2iGBqrURh2SmHmB3vq
+dataplaneswarmkey: /key/swarm/psk/1.0.0/base16/c96b489a77762e9851be2e05b4c284c37c9d8964ba57b423c7f5790b22571b29

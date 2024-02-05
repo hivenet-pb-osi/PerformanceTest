@@ -1,0 +1,716 @@
+#!/usr/bin/python3 -u
+
+import argparse
+import time
+import json
+import copy
+import subprocess
+import os.path
+import collections
+import uuid
+import random
+
+
+import jwt
+import requests
+import requests_toolbelt.multipart.encoder
+
+
+def tabulate(rows, padding=2, header=False):
+    ncells = [len(row) for row in rows]
+    assert max(ncells) == min(ncells)
+    cols = [0] * ncells[0]
+    for row in rows:
+        for i, cell in enumerate(row):
+            cols[i] = max(cols[i], len(str(cell)))
+
+    retval = [(' '*padding).join([str(cell).ljust(cols[i]) for i, cell in enumerate(row)]) for row in rows]
+    if header:
+        width = sum(cols) + padding * (len(cols)-1)
+        retval = [retval[0]] + ['-'*width] + retval[1:]
+    return '\n'.join(retval)
+
+
+def _hash_password(password, salt, iterations=1000000):
+    import hashlib
+    import binascii
+    assert salt and isinstance(salt, str) and "$" not in salt
+    assert isinstance(password, str)
+    pw_hash = hashlib.pbkdf2_hmac("sha512", password.encode("utf-8"), salt.encode("utf-8"), iterations, 32)
+    return(binascii.hexlify(pw_hash).decode())
+
+
+def _verify_password(password, password_hash):
+    if (password_hash or "").count("$") != 3:
+        return False
+    algorithm, iterations, salt, _ = password_hash.split("$", 3)
+    iterations = int(iterations)
+    assert algorithm == "pbkdf2_sha512"
+    return _hash_password(password, salt, iterations)
+
+
+def _request(args, method, url, headers=None, **kwargs):
+    request = requests.Request(method=method, url=url, headers=headers, **kwargs)
+    prepared = request.prepare()
+    if args.debug:
+        print(f'{prepared.method} {prepared.url} {prepared.headers} {prepared.body}')
+    s = requests.Session()
+    response = s.send(prepared)
+    if args.debug:
+        print(f'status_code={response.status_code}, text={response.text}')
+    return response
+
+
+def _update_config(args, **kwargs):
+    try:
+        config = _read_config(args)
+    except:
+        config = {}
+    config.update(kwargs)
+    with open(args.config, 'w+') as f:
+        json.dump(config, f)
+
+
+def _read_config(args):
+    with open(args.config) as f:
+        return json.load(f)
+
+
+def login_function(args):
+    constants =  {
+        'dev': {
+            'domain': "dev-6te1lp0y.us.auth0.com",
+            'audience': "https://platform.preprod.hivenet.com/",
+            'client_id': "sXCHiI4odN2kv8P45SVcQksKRsybLJaS",
+        },
+        'local': {
+            'domain': "dev-6te1lp0y.us.auth0.com",
+            'audience': "https://platform.preprod.hivenet.com/",
+            'client_id': "2cFxjLEh6xx7b83hSTJvK7pxS9Bl3gyS",
+            'client_secret': 'u-GGzynR0IMyr1nCKR5XyjDr3W6JG77JBtyXvMWcHzlIuIs3ElIccsP5SPs2lJ3y',
+        },
+    }
+    env = constants[args.env]
+
+    if args.env == 'local':
+        access_token = _m2m_login(args, env)
+    else:
+        access_token = _interactive_login(args, env)
+
+    _update_config(args, access_token=access_token)
+
+    response = _agent_request(args, method='PUT', path='/token')
+    if response.status_code != 204:
+        print('Unable to hand over token to agent')
+
+
+def _m2m_login(args, env):
+    response = _request(args, method='POST', url=f'https://{env["domain"]}/oauth/token', data={
+        'client_id': env['client_id'],
+        'grant_type': 'client_credentials',
+        'client_secret': env['client_secret'],
+        'audience': env['audience']
+    })
+    response.raise_for_status()
+    access_token = response.json()['access_token']
+    return access_token
+
+
+def _interactive_login(args, env):
+    response = _request(args, method='POST', url=f'https://{env["domain"]}/oauth/device/code', data={
+        'client_id': env['client_id'],
+        'scope': 'offline_access',
+        'audience': env['audience']
+    })
+    response.raise_for_status()
+    device_code = response.json()['device_code']
+    verification_url = response.json()['verification_uri_complete']
+
+    print(verification_url)
+
+    while True:
+        response = _request(args, method='POST', url=f'https://{env["domain"]}/oauth/token', data={
+            'client_id': env['client_id'],
+            'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
+            'device_code': device_code,
+        })
+        if response.status_code == 200:
+            access_token = response.json()['access_token']
+            return access_token
+        time.sleep(1)
+
+
+def _jwt_user_id(access_token):
+    token = jwt.decode(access_token, algorithms=['RS256'],  options={"verify_signature": False})
+    return token['sub']
+
+
+def _agent_noauth_request(args, method, path, **kwargs):
+    config = _read_config(args)
+    return _request(args, method=method, url=f'http://127.0.0.1:{_agent_port(config)}{path}', **kwargs)
+
+
+def _agent_request(args, method, path, headers=None, **kwargs):
+    config = _read_config(args)
+    if headers is None:
+        headers = {}
+    else:
+        headers = copy.copy(headers)
+    headers.update({
+        'Authorization': f'Bearer {config["access_token"]}',
+        'X-Hive-User-Id': _jwt_user_id(config['access_token']),
+    })
+    return _agent_noauth_request(args, method=method, path=path, headers=headers, **kwargs)
+
+
+def _agent_user_key_request(args, method, path, **kwargs):
+    config = _read_config(args)
+    return _agent_request(args, method=method, path=path, headers={
+        'X-Hive-User-Key': _hash_password(config['password'], _jwt_user_id(config['access_token']))
+    }, **kwargs)
+
+
+def workspace_read_function(args):
+    if args.mid is None:
+        response = _agent_request(args, method='GET', path='/workspaces')
+        if response.status_code == 404:
+            print('No workspace')
+            return
+    else:
+        response = _agent_user_key_request(args, method='GET', path=f'/workspaces/{args.mid}')
+        if response.status_code == 404:
+            print('No workspace')
+            return
+    print(json.dumps(response.json()))
+
+
+def workspace_create_function(args):
+    config = _read_config(args)
+    response = _agent_request(args, method='POST', path='/workspaces', json={
+        'user_key': _hash_password(args.password, _jwt_user_id(config['access_token'])),
+        'volume_name': args.name
+    })
+    if response.status_code == 201:
+        _update_config(args, workspace=response.json(), password=args.password)
+    print(json.dumps(response.json()))
+
+
+def workspace_decrypt_function(args):
+    config = _read_config(args)
+    response = _agent_request(args, method='GET', path='/workspaces')
+    if response.status_code != 200:
+        print('No workspace')
+        return
+
+    workspace_mid = response.json()['workspace_mid']
+    response = _agent_request(args, method='GET', path=f'/workspaces/{workspace_mid}', headers={
+        'X-Hive-User-Key': _hash_password(args.password, _jwt_user_id(config['access_token']))
+    })
+    response.raise_for_status()
+    _update_config(args, workspace=response.json(), password=args.password)
+    print(json.dumps(response.json()))
+
+
+def _docker_port(name):
+    command = f"docker container inspect {name}".split(' ')
+    stdout = subprocess.check_output(command)
+    data = json.loads(stdout)
+    mappings = data[0]['NetworkSettings']['Ports']['8080/tcp']
+    for mapping in mappings:
+        if mapping['HostIp'] == '0.0.0.0':
+            return mapping['HostPort']
+    assert False
+
+
+def _agent_port(config):
+    if config['agent_port'] is not None:
+        return config['agent_port']
+    elif config['agent_container'] is not None:
+        return _docker_port(config['agent_container'])
+    else:
+        assert False
+
+
+def connect_function(args):
+    try:
+        _connect(args)
+    except:
+        print('KO')
+
+
+def _agent_health(args, port):
+    response = _request(args, method='GET', url=f'http://127.0.0.1:{port}/health')
+    response.raise_for_status()
+    if args.format == 'text':
+        print(response.json()['storageStatus'])
+    elif args.format == 'json':
+        print(json.dumps(response.json()))
+    else:
+        assert False
+    return response
+
+
+def _connect(args):
+    if args.port is not None:
+        _agent_health(args, args.port)
+        _update_config(args, agent_port=args.port, agent_container=None)
+    elif args.container is not None:
+        port = _docker_port(args.container)
+        _agent_health(args, port)
+        _update_config(args, agent_container=args.container, agent_port=None)
+    else:
+        assert False
+    _update_config(args, working_directory='/')
+
+
+def _agent_read_key_request(args, method, path, headers=None, **kwargs):
+    config = _read_config(args)
+    if headers is None:
+        headers = {}
+    else:
+        headers = copy.copy(headers)
+    headers.update({
+        'X-Hive-Read-Key': config['workspace']['read_key']
+    })
+    response = _agent_request(args, method=method, path=path, headers=headers, **kwargs)
+    return response
+
+
+def volume_read_function(args):
+    response = _agent_read_key_request(args, method='GET', path=f'/volumes/{args.mid}')
+    response.raise_for_status()
+    print(response.json())
+
+
+def directory_create_function(args):
+    response = _agent_read_key_request(args, method='POST', path='/directories', json={
+        'parent_mid': args.parent_mid,
+        'name': args.name
+    })
+    print(response.json())
+
+
+def directory_read_function(args):
+    response = _agent_read_key_request(args, method='GET', path=f'/directories/{args.mid}', params={
+        'offset': args.offset,
+        'limit': args.limit
+    })
+    print(response.json())
+
+
+def _setup_directory_parser(toplevel_parser):
+    directory = toplevel_parser.add_parser('directory', help='Directory functions')
+    directory_subparser = directory.add_subparsers(required=True)
+
+    directory_create = directory_subparser.add_parser('create', help='Create a directory')
+    directory_create.add_argument('parent_mid', help='Mid of parent', type=str)
+    directory_create.add_argument('name', help='Name of directory to create', type=str)
+    directory_create.set_defaults(func=directory_create_function)
+
+
+    directory_read = directory_subparser.add_parser('read', help='Read a directory')
+    directory_read.add_argument('mid', help='Mid of directory', type=str)
+    directory_read.add_argument('--offset', help='Offset for pagination', type=int, default=None)
+    directory_read.add_argument('--limit', help='Limit for pagination', type=int, default=None)
+    directory_read.set_defaults(func=directory_read_function)
+
+
+def _setup_volume_parser(toplevel_parser):
+    volume = toplevel_parser.add_parser('volume', help='Volume functions')
+    volume_subparser = volume.add_subparsers(required=True)
+
+    volume_read = volume_subparser.add_parser('read', help='Read a volume')
+    volume_read.add_argument('mid', help='Mid of volume')
+    volume_read.set_defaults(func=volume_read_function)
+
+
+def _setup_workspace_parser(toplevel_parser):
+    workspace = toplevel_parser.add_parser('workspace', help='Workspace functions')
+    workspace_subparser = workspace.add_subparsers(required=True)
+
+    workspace_create = workspace_subparser.add_parser('create', help='Create a workspace for the user')
+    workspace_create.add_argument('password', help='The user password to control workspace-level encryption')
+    workspace_create.add_argument('--name', help='Name of the workspace', default='default', required=False)
+    workspace_create.set_defaults(func=workspace_create_function)
+
+    workspace_read = workspace_subparser.add_parser('read', help='Read a specific workspace. If none is provided, read the default one.')
+    workspace_read.add_argument('mid', help='The mid of the workspace we want to read', default=None, nargs='?')
+    workspace_read.set_defaults(func=workspace_read_function)
+
+    workspace_decrypt = workspace_subparser.add_parser('decrypt', help='Decrypt the default workspace.')
+    workspace_decrypt.add_argument('password', help='The user password to decrypt the workspace')
+    workspace_decrypt.set_defaults(func=workspace_decrypt_function)
+
+
+def health_function(args):
+    config = _read_config(args)
+    _agent_health(args, _agent_port(config))
+
+
+def pwd_function(args):
+    config = _read_config(args)
+    print(config['working_directory'])
+
+
+FsItem = collections.namedtuple('FsItem', ['mid', 'name', 'kind'])
+
+
+def _workspace_read(args):
+    config = _read_config(args)
+    for volume in config['workspace']['volumes']:
+        yield FsItem(mid=volume['volumeMID'], name=volume['name'], kind='volume')
+
+
+def _volume_read(args, mid):
+    response = _agent_read_key_request(args, method='GET', path=f'/volumes/{mid}')
+    response.raise_for_status()
+    children = response.json()['children']
+    for child in [] if children is None else children:
+        yield FsItem(mid=child['mid'], name=child['name'], kind=child['kind'])
+
+
+def _directory_read(args, mid):
+    offset = 0
+    while True:
+        response = _agent_read_key_request(args, method='GET', path=f'/directories/{mid}', params={
+            'offset': offset,
+            'limit': 100
+        })
+        response.raise_for_status()
+        children = response.json()['children']
+        if len(children) == 0:
+            break
+        for child in children:
+            yield FsItem(mid=child['mid'], name=child['name'], kind=child['kind'])
+        offset += len(children)
+
+
+def _read_path(args, path):
+    assert path.startswith('/')
+    config = _read_config(args)
+    workspace = [FsItem(mid=config['workspace']['workspace_mid'], name='', kind='workspace')]
+    if path == '/':
+        return workspace
+    elements = path.split('/')[1:]
+    def _recursive(depth, parent, left):
+        if len(left) == 0:
+            return []
+        if depth == 0:
+            children = _workspace_read(args)
+        elif depth == 1:
+            children = _volume_read(args, parent.mid)
+        elif depth >= 2:
+            children = _directory_read(args, parent.mid)
+        else:
+            assert False
+        for child in children:
+            if child.name == left[0]:
+                return [child] + _recursive(depth+1, child, left[1:])
+        return [FsItem(mid=None, name=item, kind='directory') for item in left]
+    return workspace + _recursive(0, None, elements)
+
+
+def _is_path_unknown(path):
+    assert len(path) > 0
+    return path[-1].mid is None
+
+
+def _canonicalized_path(args, path):
+    config = _read_config(args)
+    if path.startswith('/'):
+        return os.path.normpath(path)
+    else:
+        return os.path.abspath(os.path.join(config['working_directory'], path))
+
+
+def cd_function(args):
+    if args.path == '':
+        return
+    path = _canonicalized_path(args, args.path)
+    items = _read_path(args, path)
+    if _is_path_unknown(items):
+        print('Unknown target path')
+        return
+    _update_config(args, working_directory=path)
+
+
+def _mkdir(args, parent_mid, name):
+    response = _agent_read_key_request(args, method='POST', path=f'/directories', json={
+        'parent_mid': parent_mid,
+        'name': name
+    })
+    response.raise_for_status()
+    directory = response.json()
+    return FsItem(mid=directory['mid'], name=name, kind='directory')
+
+
+def mkdir_function(args):
+    if args.path == '':
+        return
+    path = _canonicalized_path(args, args.path)
+    items = _read_path(args, path)
+    if len(items) == 1:
+        print('Unable to create directories at the workspace level')
+        return
+    nmissing = len([i for i in items if i.mid is None])
+    if nmissing == 0:
+        print('Entry already exists')
+    elif nmissing > 1 and not args.parents:
+        print('Parent(s) missing')
+    elif nmissing > 1 and args.parents:
+        i = 1
+        previous = items[0]
+        while i < len(items):
+            if items[i].mid is None:
+                previous = _mkdir(args, previous.mid, items[i].name)
+            else:
+                previous = items[i]
+            i += 1
+    else:
+        _mkdir(args, items[-2].mid, items[-1].name)
+
+
+def ls_function(args):
+    config = _read_config(args)
+    if args.path == '':
+        path = config['working_directory']
+    else:
+        path = _canonicalized_path(args, args.path)
+    items = _read_path(args, path)
+    if _is_path_unknown(items):
+        print('Unknown path')
+        return
+    if len(items) == 1:
+        children = _workspace_read(args)
+    elif len(items) == 2:
+        children = _volume_read(args, items[-1].mid)
+    elif len(items) >= 3:
+        children = _directory_read(args, items[-1].mid)
+    else:
+        assert False
+    rows = [[child.kind, child.name] for child in children]
+    if len(rows) > 0:
+        print(tabulate(rows))
+
+
+def _docker_copy(src, container, dst):
+    subprocess.call(f"docker container cp {src} {container}:{dst}".split(' '))
+
+
+def download_function(args):
+    config = _read_config(args)
+    path = _canonicalized_path(args, args.path)
+    items = _read_path(args, path)
+    if _is_path_unknown(items):
+        print("File does not exist")
+        return
+    response = _agent_read_key_request(args, method='GET', path=f'/files/{items[-1].mid}')
+    response.raise_for_status()
+    if args.local_path is not None:
+        local_path = args.local_path
+    else:
+        local_path = os.path.basename(path)
+    with open(local_path, 'wb+') as f:
+        f.write(response.content)
+
+
+def upload_function(args):
+    config = _read_config(args)
+    if args.remote_path is None:
+        remote_path = _canonicalized_path(args, os.path.basename(args.path))
+    else:
+        remote_path = _canonicalized_path(args, args.remote_path)
+    remote_directory = os.path.dirname(remote_path)
+    items = _read_path(args, remote_directory)
+    if _is_path_unknown(items):
+        print('Remote directory does not exist')
+        return
+    if config['agent_port'] is not None:
+        local_path = args.path
+        if not os.path.isfile(local_path):
+            print('Local file does not exist')
+            return
+    elif config['agent_container'] is not None:
+        local_path = f'/data/{config["agent_container"]}/{uuid.uuid4()}'
+        _docker_copy(args.path, config['agent_container'], local_path)
+    else:
+        assert False
+    data = requests_toolbelt.multipart.encoder.MultipartEncoder(fields={
+        'type': 'FILE_UPLOAD',
+        'jsonMetadata': json.dumps({
+            'filename': os.path.basename(remote_path),
+            'parentMid':  items[-1].mid,
+            'filePath': local_path
+        }),
+        'metadataVersion': '1.0.0',
+    })
+    response = _agent_read_key_request(args, method='POST', path='/tasks', data=data, headers={
+        'Content-Type': data.content_type
+    })
+    response.raise_for_status()
+    task_id = response.json()['id']
+    while True:
+        response = _agent_read_key_request(args, method='GET', path=f'/tasks/{task_id}')
+        if response.status_code == 200 and response.json()['status'] == 'SUCCESSFUL':
+            break
+        time.sleep(1)
+
+
+def _block_get_function(args):
+    response = _agent_noauth_request(args, method='GET', path=f'/debug/block/{args.cid}')
+    response.raise_for_status()
+    with open(args.cid, 'wb+') as f:
+        f.write(response.content)
+
+
+def _block_put_function(args):
+    if args.mid is not None:
+        mid = args.mid
+    else:
+        mid = uuid.uuid4().hex
+    if args.block is not None:
+        with open(args.block, 'rb') as f:
+            block = f.read()
+    else:
+        block = random.randbytes(1000000)
+    data = requests_toolbelt.multipart.encoder.MultipartEncoder(fields={
+        'mid': mid,
+        'peerId': args.peer,
+        'blockContent': block
+    })
+    response = _agent_noauth_request(args, method='POST', path=f'/debug/put-block', data=data, headers={
+        'Content-Type': data.content_type
+    })
+    print(response.content)
+    response.raise_for_status()
+    print(response.content)
+
+
+def _block_proxy_function(args):
+    response = _agent_noauth_request(args, method='GET', path=f'/debug/proxy-block')
+    response.raise_for_status()
+    print(response.content)
+
+
+def _setup_block_parser(subparsers):
+    block = subparsers.add_parser('block', help='Block functions')
+    block_subparser = block.add_subparsers(required=True)
+
+    block = block_subparser.add_parser('get', help='Download a block')
+    block.add_argument('cid', help='Cid of the block. Block will be stored in local working directory as file CID.')
+    block.set_defaults(func=_block_get_function)
+
+    put_block = block_subparser.add_parser('put', help='Upload a block to a peer.')
+    put_block.add_argument('peer', help='Node id of the remote peer the block will be uploaded to.', type=str)
+    put_block.add_argument('--block', help='File where the the block content can be read from. If unspecified, a block of size 1M will be generated with random content.', default=None, type=str)
+    put_block.add_argument('--mid', help='mid of the block. If unspecified, it will be generated randomly', default=None, type=str)
+    put_block.set_defaults(func=_block_put_function)
+
+    proxy_block = block_subparser.add_parser('proxy', help='Proxy a block upload to a peer via another peer.')
+    proxy_block.add_argument('peer', help='Node id of the remote peer the block will be uploaded to.')
+    proxy_block.add_argument('proxy_peer', help='Node id of the remote peer the block will be proxied via.')
+    proxy_block.add_argument('--block', help='File where the the block content can be read from. If unspecified, a block of size 1M will be generated with random content.', default=None, type=str)
+    proxy_block.add_argument('--mid', help='mid of the block. If unspecified, it will be generated randomly', default=None, type=str)
+    proxy_block.set_defaults(func=_block_proxy_function)
+
+
+def _p2p_info_function(args):
+    response = _agent_noauth_request(args, method='GET', path='/health')
+    response.raise_for_status()
+    output = response.json().items()
+    print(tabulate(output))
+
+
+def _p2p_control_peers_function(args):
+    response = _agent_noauth_request(args, method='GET', path='/p2p/control/peers')
+    response.raise_for_status()
+    output = sorted([[peer['peerId'], peer['connectionStatus']] for peer in response.json()['ctrlPlanePeers']])
+    print(tabulate(output))
+
+
+def _p2p_data_peers_function(args):
+    response = _agent_noauth_request(args, method='GET', path='/p2p/data/peers')
+    response.raise_for_status()
+    output = sorted([[peer['peerId'], peer['connectionStatus']] for peer in response.json()['dataPlanePeers']])
+    print(tabulate(output))
+
+
+def _setup_p2p_parser(subparsers):
+    p2p = subparsers.add_parser('p2p', help='p2p functions')
+    p2p_subparser = p2p.add_subparsers(required=True)
+
+    p2p_info = p2p_subparser.add_parser('info', help='Show information on node')
+    p2p_info.set_defaults(func=_p2p_info_function)
+
+    p2p_control_peers = p2p_subparser.add_parser('control-peers', help='Show information on node peers for the control plane')
+    p2p_control_peers.set_defaults(func=_p2p_control_peers_function)
+
+    p2p_data_peers = p2p_subparser.add_parser('data-peers', help='Show information on node peers for the data plane')
+    p2p_data_peers.set_defaults(func=_p2p_data_peers_function)
+
+
+def _setup_fs_parser(subparsers):
+    fs = subparsers.add_parser('fs', help='Filesystem functions')
+    fs_subparser = fs.add_subparsers(required=True)
+
+    pwd = fs_subparser.add_parser('pwd', help='Print working directory')
+    pwd.set_defaults(func=pwd_function)
+
+    cd = fs_subparser.add_parser('cd', help='Change working directory')
+    cd.add_argument('path', help='Directory to change to')
+    cd.set_defaults(func=cd_function)
+
+    mkdir = fs_subparser.add_parser('mkdir', help='Create directory')
+    mkdir.add_argument('path', help='Directory to create')
+    mkdir.add_argument('-p', '--parents', help='Create intermediate parent directories', action='store_true')
+    mkdir.set_defaults(func=mkdir_function)
+
+    ls = fs_subparser.add_parser('ls', help='List content of directory')
+    ls.add_argument('path', help='Path', default='', nargs='?')
+    ls.set_defaults(func=ls_function)
+
+    upload = fs_subparser.add_parser('upload', help='Upload a file to remote working directory from local working directory')
+    upload.add_argument('--remote-path', default=None, help='Path of the file on the remote once uploaded. By default, this will be the local filename in the remote working directory.')
+    upload.add_argument('path', help='Local path to file.')
+    upload.set_defaults(func=upload_function)
+
+    download = fs_subparser.add_parser('download', help='Download a file from a remote working directory to the local working directory')
+    download.add_argument('--local-path', default=None, help='Path of the file locally once downloaded. By default, this will be the remote filename in the local working directory.')
+    download.add_argument('path', help='Remote path to file.')
+    download.set_defaults(func=download_function)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-d', '--debug', action='store_true')
+    parser.add_argument('-c', '--config', default='config.json', help='The configuration data will be stored in this file. Default: %(default)s')
+    subparsers = parser.add_subparsers(required=True)
+
+    health = subparsers.add_parser('health', help='Lookup agent health status')
+    health.add_argument('-f', '--format', default='text', choices=['text', 'json'])
+    health.set_defaults(func=health_function)
+
+    login = subparsers.add_parser('login', help='Login against one of our auth0 instances')
+    login.add_argument('env', choices=['local', 'dev', 'preprod', 'prod'], default='local', help='The auth0 environment used to login against. Default: %(default)s')
+    login.set_defaults(func=login_function)
+
+    connect = subparsers.add_parser('connect', help='Connect to an agent on localhost')
+    connect.add_argument('-f', '--format', default='text', choices=['text', 'json'])
+    group = connect.add_mutually_exclusive_group(required=True)
+    group.add_argument('--port', type=int, help='The port number. Default: %(default)s', default=None)
+    group.add_argument('--container', type=str, help='The name of the docker container we want to connect to. Default: %(default)s', default=None)
+    connect .set_defaults(func=connect_function)
+
+    _setup_p2p_parser(subparsers)
+    _setup_block_parser(subparsers)
+    _setup_fs_parser(subparsers)
+    _setup_directory_parser(subparsers)
+    _setup_volume_parser(subparsers)
+    _setup_workspace_parser(subparsers)
+
+    args = parser.parse_args()
+
+    args.func(args)
+
+
+main()

@@ -1,0 +1,58 @@
+version: '3.4'
+
+services:
+
+  hive-platform:
+    image: hive-platform:latest
+    platform: linux/amd64
+    environment:
+      - m2m_auth0_client_secret=EMPTY
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "8082"
+
+  agent:
+    image: hive-agent:now
+    user: ${UID}:${GID}
+    ports:
+      # dlv port number
+      - "2345"
+      # the agent http API
+      - "8080"
+      # the agent http API for the /metrics endpoint
+      - "8082"
+      # the agent control plane TCP port
+      - "4443"
+      # the agent data plane TCP port
+      - "4001"
+    command: /scripts/start.sh ${SWARM_TOKEN}
+    volumes:
+      - ./data:/data
+      - ./hive-agent/scripts:/scripts:ro
+      - ./data/machine-id:/etc/machine-id:ro
+      - ./data/machine-id:/var/lib/dbus/machine-id:ro
+
+  agent-bootstrap:
+    extends:
+      service: agent
+
+  agent-helper:
+    extends:
+      service: agent
+
+  agent-user:
+    extends:
+      service: agent
+
+volumes:
+  agent:
+
+networks:
+  default:
+    ipam:
+      config:
+        # You want to make sure that this specific address is
+        # not included in FilteredAddrs. Otherwise, nothing will
+        # happen AT ALL
+        - subnet: 13.253.0.0/16

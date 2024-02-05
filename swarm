@@ -1,0 +1,325 @@
+#!/usr/bin/python3 -u
+
+import argparse
+import subprocess
+import os
+import json
+import collections
+import sys
+import time
+import platform
+import uuid
+
+import yaml
+import requests
+
+
+def tabulate(rows, padding=2, header=False):
+    ncells = [len(row) for row in rows]
+    assert max(ncells) == min(ncells)
+    cols = [0] * ncells[0]
+    for row in rows:
+        for i, cell in enumerate(row):
+            cols[i] = max(cols[i], len(str(cell)))
+   
+    retval = [(' '*padding).join([str(cell).ljust(cols[i]) for i, cell in enumerate(row)]) for row in rows]
+    if header:
+        width = sum(cols) + padding * (len(cols)-1) 
+        retval = [retval[0]] + ['-'*width] + retval[1:]
+    return '\n'.join(retval)
+        
+
+def _executable(name):
+    for p in os.environ['PATH'].split(':'):
+        candidate = os.path.join(p, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return name
+
+
+def _run(args, command, env=None):
+    command = [_executable(command[0])] + command[1:]
+    if args.debug:
+        print(' '.join(command))
+    subprocess.run(command, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr, env=env, check=True)
+
+
+def _run_stdout(args, command, env=None):
+    command = [_executable(command[0])] + command[1:]
+    if args.debug:
+        print(' '.join(command))
+    return subprocess.check_output(command, env=env)
+
+def build_function(args):
+    if args.force:
+        now = int(time.time() * 1000)
+        force = ["--build-arg", f"AGENT_GIT_VERSION={now}"]
+    else:
+        force = []
+    machine_to_goarch = {
+        'x86_64': 'amd64',
+        'arm64' : 'arm64'
+    }
+    go_arch = machine_to_goarch[platform.machine()]
+    command = [
+        "docker", "compose",
+        "--file", "docker-compose.yml", 
+        "--file", "docker-compose.build.yml",
+        "build",
+        "--build-arg", f"GO_ARCH={go_arch}",
+        "--build-arg", f"AGENT_GIT_REPO={args.agent_repo}",
+        "--build-arg", f"AGENT_GIT_BRANCH={args.agent_branch}"
+    ] + force + [
+        "agent"
+    ]
+    _run(args, command)
+
+
+def _initialize_keys(args, name, node_class):
+    uid = os.geteuid()
+    gid = os.getegid()
+    command = ["docker", "container", "run",
+        "--user", f"{uid}:{gid}",
+        "--env", f"HOME=/data/{name}",
+        "--env", f"CLASS={node_class}",
+        "-v", "./data:/data", "-v", "./hive-agent/scripts/:/scripts/",
+        "hive-agent:now", "/scripts/initialize-keys.sh"
+    ]
+    _run(args, command)
+
+
+def _read_configuration(name):
+    with open(f"./data/{name}/.hive/config.yaml") as f:
+        return yaml.safe_load(f)
+
+
+def _read_swarm_key():
+    with open("swarm-key.json") as f:
+        data = json.load(f)
+        return data['swarm_key']
+
+
+def _write_swarm_key(key):
+    with open("swarm-key.json", "w+") as f:
+        json.dump({'swarm_key': key}, f)
+
+
+def _generate_swarm_key():
+    return os.urandom(32).hex()
+
+
+def _write_swarm_config(args, name, configuration):
+    with open(f'data/{name}/.hive/hiveconfig.yaml', 'w+') as f:
+        yaml.dump(configuration, f)
+
+
+def _write_machine_id(args):
+    machine_id = uuid.uuid4().hex
+    with open(f'data/machine-id', 'w+') as f:
+        f.write(machine_id)
+
+
+def generate_configuration(args):
+    _write_machine_id(args)
+    try:
+        swarm_key = _read_swarm_key()
+    except:
+        swarm_key = _generate_swarm_key()
+        _write_swarm_key(swarm_key)
+    
+    # initialize keys for all nodes
+    for i in range(args.scale_bootstrap):
+        name = f"swarm-agent-bootstrap-{i+1}"
+        _initialize_keys(args, name, 'super')
+    for i in range(args.scale_helper):
+        name = f"swarm-agent-helper-{i+1}"
+        _initialize_keys(args, name, 'super')
+    for i in range(args.scale_user):
+        name = f"swarm-agent-user-{i+1}"
+        _initialize_keys(args, name, 'user')
+
+    # collect bootstrap keys
+    bootstrap_nodes = {}
+    for i in range(args.scale_bootstrap):
+        name = f"swarm-agent-bootstrap-{i+1}"
+        configuration = _read_configuration(name)
+        bootstrap_nodes[name] = configuration
+
+    swarm_configuration = {
+        'controlplanesupernodes': [f'/dns4/{name}/tcp/4443/p2p/{configuration["controlplanenodeid"]}' for name, configuration in bootstrap_nodes.items()],
+        'dataplanesupernodes': [f'/dns4/{name}/tcp/4001/p2p/{configuration["dataplanenodeid"]}' for name, configuration in bootstrap_nodes.items()],
+        'dataplaneswarmkey': f'/key/swarm/psk/1.0.0/base16/{swarm_key}'
+    }
+    for i in range(args.scale_bootstrap):
+        name = f"swarm-agent-bootstrap-{i+1}"
+        _write_swarm_config(args, name, swarm_configuration)
+    for i in range(args.scale_helper):
+        name = f"swarm-agent-helper-{i+1}"
+        _write_swarm_config(args, name, swarm_configuration)
+    for i in range(args.scale_user):
+        name = f"swarm-agent-user-{i+1}"
+        _write_swarm_config(args, name, swarm_configuration)
+
+def up_function(args):
+    generate_configuration(args)
+    daemon = ["-d"] if args.daemon else []
+    command = [
+        "docker", "compose", "--file", "docker-compose.yml", "up"] + daemon + [
+        "--scale", f"agent-bootstrap={args.scale_bootstrap}",
+        "--scale", f"agent-helper={args.scale_helper}",
+        "--scale", f"agent-user={args.scale_user}",
+        "agent-bootstrap", "agent-helper", "agent-user", "hive-platform"
+    ]
+    env = {
+        'UID': '%s' % os.geteuid(),
+        'GID': '%s' % os.getegid()
+    }
+    _run(args, command, env=env)
+
+
+def _read_containers(args, filter):
+    agents = _run_stdout(args, ["docker", "container", "ls", "-f", filter, "--format", "json"])
+    for agent in agents.split(b"\n"):
+        if not agent:
+            break
+        data = json.loads(agent)
+        yield data
+
+
+def _parse_port_mapping(port_mapping):
+    PortMapping = collections.namedtuple('PortMapping', ['version', 'src', 'dst', 'protocol'])
+    src, dst = port_mapping.split('->')
+    destination, protocol = dst.split('/')
+    if '0.0.0.0' in src:
+        version = 'ipv4'
+        source = src.split(':')[1]
+    else:
+        version = 'ipv6'
+        source = src.split(':')[-1]
+    return PortMapping(version=version, src=source, dst=destination, protocol=protocol)
+
+
+def _agent_health(args, port):
+    try:
+        response = requests.get(f"http://127.0.0.1:{port}/health")
+    except requests.exceptions.ConnectionError:
+        return 'KO (connection)'
+    else: 
+        if response.status_code != 200:
+            return 'KO (http status)'
+        else:
+            status = response.json()["storageStatus"]
+            if status == "READY":
+                return 'OK'
+            else:
+                return f'KO (status={status})' 
+
+
+def _platform_health(args, port):
+    try:
+        response = requests.get(f"http://127.0.0.1:{port}/actuator/health")
+    except requests.exceptions.ConnectionError:
+        return 'KO (connection)'
+    else: 
+        if response.status_code != 200:
+            return 'KO (http status)'
+        else:
+            status = response.json()["status"]
+            if status == 'UP':
+                return 'OK'
+            else:
+                return f'KO (status={status})'
+
+
+def health_function(args):
+    statuses = [['name', 'status']]
+    agents = _read_containers(args, "name=agent")
+    for agent in agents:
+        for port in agent["Ports"].split(','):
+            mapping = _parse_port_mapping(port)
+            if mapping.version == 'ipv4' and mapping.dst == '8080':
+                status = _agent_health(args, mapping.src)
+                statuses.append([agent['Names'], status])
+
+    platforms = _read_containers(args, "name=hive-platform")
+    for platform in platforms:
+        for port in platform["Ports"].split(','):
+            mapping = _parse_port_mapping(port)
+            if mapping.version == 'ipv4' and mapping.dst == '8082':
+                status = _platform_health(args, mapping.src)
+                statuses.append([platform['Names'], status])
+
+    print(tabulate(statuses, header=True))
+
+
+def pull_function(args):
+    command = [
+        "docker", "pull", f'{os.environ["DOCKER_REPO"]}/hive-platform/mutable-record:latest'
+        "--file", "docker-compose.yml", 
+        "pull",
+        "agent"
+    ]
+    _run(args, command)
+
+
+def agent_debug_function(args):
+    name = args.name
+    command = [
+        "docker", "exec", "-w", f"/data/{args.name}", "--env", f"HOME=/data/{name}", "-ti", name, "dlv", "connect", "127.0.0.1:2345"
+    ]
+    _run(args, command)
+
+
+def agent_shell_function(args):
+    name = args.name
+    command = [
+        "docker", "exec", "-w", f"/data/{name}",
+        "--env", f'PS1=[{os.environ["USER"]}@{name}]$ ',
+        "--env", f"HOME=/data/{name}",
+        "-ti", name, "/bin/bash", "--noprofile", "--norc"
+    ]
+    try:
+        _run(args, command)
+    except subprocess.CalledProcessError:
+        pass
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-d', '--debug', action='store_true')
+    subparsers = parser.add_subparsers(required=True)
+
+    pull = subparsers.add_parser('pull', help='Download pre-built images from our docker registry. See https://hiveteam.atlassian.net/wiki/spaces/EN/pages/144998440 for the magic variables')
+    pull.add_argument('--agent-version', default='latest', type=str)
+    pull.set_defaults(func=pull_function)
+
+    build = subparsers.add_parser('build', help='Build from git source')
+    build.add_argument('--agent-repo', default='HiveNetCode/hive-agent', type=str)
+    build.add_argument('--agent-branch', default='master', type=str)
+    build.add_argument('-f', '--force', action='store_true', help='Force a rebuild starting at the git clone')
+    build.set_defaults(func=build_function)
+
+    up = subparsers.add_parser('up', help='Start the swarm containers')
+    up.add_argument('--scale-bootstrap', default=4, type=int, help="Number of bootstrap nodes. Default: %(default)s")
+    up.add_argument('--scale-helper', default=2, type=int, help='Number of helper nodes. Default: %(default)s')
+    up.add_argument('--scale-user', default=2, type=int, help="Number of user nodes. Default: %(default)s")
+    up.add_argument('-d', '--daemon', action='store_true', help="Start all containers in the background. By default, they will take over stdout and docker will monitor your tty for C-C.")
+    up.set_defaults(func=up_function)
+
+    health = subparsers.add_parser('health', help='Report on the health of each container')
+    health.set_defaults(func=health_function)
+
+    debug = subparsers.add_parser('agent-debug', help='Debug a specific agent container')
+    debug.add_argument('name', help='Name of container. One of: swarm-agent-(boostrap|helper|user)-X')
+    debug.set_defaults(func=agent_debug_function)
+
+    shell = subparsers.add_parser('agent-shell', help='Open a shell on a specific agent container')
+    shell.add_argument('name', help='Name of container. One of: swarm-agent-(boostrap|agent|user)-X')
+    shell.set_defaults(func=agent_shell_function)
+
+    args = parser.parse_args()
+
+    args.func(args)
+
+
+main()

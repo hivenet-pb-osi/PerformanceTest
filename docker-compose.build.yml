@@ -1,0 +1,12 @@
+version: '3.4'
+
+services:
+
+  agent:
+    build:
+      context: ./hive-agent
+      args:
+        AGENT_GIT_BRANCH:
+        AGENT_GIT_REPO:
+      ssh:
+        - default

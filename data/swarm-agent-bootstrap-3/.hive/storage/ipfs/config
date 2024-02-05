@@ -1,0 +1,188 @@
+{
+  "Identity": {
+    "PeerID": "QmZbnUgC8XTyseFZCA7vr819r4iV1dfYF6qeSFXWk1CcXJ",
+    "PrivKey": "CAASqAkwggSkAgEAAoIBAQC2vklMcWYA068JUMjiW/DXFN58PJ4jH+dQJxzn/Fdz3NyBSAfLYr3yGwxDAYR2OQs3EodYz8fIWvon5mrpTJkLj0hGSF8PAOoaGt77URxl0Bz9Vt5TpSXGjx/gHG7jnrTMQ10Ru2MrejKMmq89eX1hBxPWqXjMnotYu3RnwIgw3SwIKKfHD+JlEMZ8/NDPcX69zeIVMW5PrWDjF3FJJa/jnaQ4zvtA9Oa3p4IXJHHZkcmMII8EoOeCh8k3PqathLwgSWXCAkr/cmlqDBMymjwJlkAcL9RHkKSktHUlwcy3HbdmOYk0wulawctYcxtS3rZrG2cnvW+pxS2xn2E5P9ujAgMBAAECggEBAKDc3HUYFWyA6sHOhScNO/J5Amhmi+XrfZlG9OEZdnodX1XGbGYS45WtTZvmSA4xpLez7cS2Eu1BeJeK822u6cINPNfxeQwiB/E22jZsbg0Jp5syzr7ez2P8NVj4bnycBhcQ7Wpgg6mQBdNTjxMUUNQKgOIjiJzGq29Og+eYycoISB9VnG0ccdsk85xOLAfQg6UOIROWjipY0Q1cm3uQP3lFqIw1Ylzxli2W1vsM4HB4SRLDcBUUHL84JMS9lxIVdOluS2i7iUgTKQp/0diwAQFpQFRT+syhkCv+tdFgKZHnCj61vYxSpsQTMhYfuHhA3/uCb30MfTbCD1Q8+lfELaECgYEA8pHVZ4F+PEdPwbVEdHti/57O5PuhEF8WfcycZAMXSsBIEb8De0UdIrOZumaB7K6DkKwOXx1WfAxkvk6R7nCQc00w/IHI/ntAJPJzuW7kmWDqvZkeX4+cbdVU66pjqD7+7ybX0blZ/LSVjEp/JAgst3n5Mfp1m9IEjzWoyctcWekCgYEAwNx6VnTDL1o+F0v3wyeHOdOqdl6RoNg22CBZ6KVLl7XEYKtzcsR0PHimO43KydZOBJHzaeZCpWIBH1FIcQ/XFMuXMir9lnJxwSCSW8SbRyavbMLcR9pFpdIe21Fu8E0yq6T97MIv8SL7gQRFbVs28VErGt1etwvzG9MosoM0RasCgYEAhArkqypvaCq9fMnK0MmV02ZEY5uiSoIogSRPgZW5KSTQVnCvWXv+5zPzG+fPE+LPlYJDdH1I5c/tSzcD81LtHwbHAr03h2faPAKLAkceQ2vhfIIMaaKIWbWGO58ODrj0F4UCeJS4Knq26Z5n5VpZ1SqdfxpCySai+r4P+oEr7XkCgYAQ3LYNjRPrtfYrz0aQV4ppMep7gvU0nPLenqV9w8YCM7BBy3vCkw6eouXV2yXZ09TqbWBc5/b3wsPaWx78U6g4dzx29G9LkiIEArcJMv1okSdRWRAtcBYa025DOrF6bSV7AGf7JVdPvAFFXHw9fXYmTzR3mtdHJdJRonqycOpHFQKBgAtYcAbhfNVOlEPlKQRoIsGRImhY56ScEX2aeaENne4LHSjsaXNoQoXrt+VI4WlmiTEDdLDblr0wQSupOCouFBYsnedIDUpx7tw1DH9IT7sLpRin6oGLAEps27v2knL9sPE5h9yoKxBtQmOyDceQ5Qpa94Z/a452PO29vDQKoBfp"
+  },
+  "Datastore": {
+    "StorageMax": "10GB",
+    "StorageGCWatermark": 90,
+    "GCPeriod": "1h",
+    "Spec": {
+      "mounts": [
+        {
+          "child": {
+            "path": "blocks",
+            "shardFunc": "/repo/flatfs/shard/v1/next-to-last/2",
+            "sync": true,
+            "type": "flatfs"
+          },
+          "mountpoint": "/blocks",
+          "prefix": "flatfs.datastore",
+          "type": "measure"
+        },
+        {
+          "child": {
+            "compression": "none",
+            "path": "datastore",
+            "type": "levelds"
+          },
+          "mountpoint": "/",
+          "prefix": "leveldb.datastore",
+          "type": "measure"
+        }
+      ],
+      "type": "mount"
+    },
+    "HashOnRead": false,
+    "BloomFilterSize": 0
+  },
+  "Addresses": {
+    "Swarm": [
+      "/ip4/0.0.0.0/tcp/4001"
+    ],
+    "Announce": null,
+    "AppendAnnounce": null,
+    "NoAnnounce": [
+      "/ip4/127.0.0.1/ipcidr/8",
+      "/ip4/10.0.0.0/ipcidr/8",
+      "/ip4/100.64.0.0/ipcidr/10",
+      "/ip4/169.254.0.0/ipcidr/16",
+      "/ip4/172.16.0.0/ipcidr/12",
+      "/ip4/192.0.0.0/ipcidr/24",
+      "/ip4/192.0.2.0/ipcidr/24",
+      "/ip4/192.168.0.0/ipcidr/16",
+      "/ip4/198.18.0.0/ipcidr/15",
+      "/ip4/198.51.100.0/ipcidr/24",
+      "/ip4/203.0.113.0/ipcidr/24",
+      "/ip4/240.0.0.0/ipcidr/4",
+      "/ip6/::1/ipcidr/128",
+      "/ip6/100::/ipcidr/64",
+      "/ip6/2001:2::/ipcidr/48",
+      "/ip6/2001:db8::/ipcidr/32",
+      "/ip6/fc00::/ipcidr/7",
+      "/ip6/fe80::/ipcidr/10"
+    ],
+    "API": null,
+    "Gateway": null
+  },
+  "Mounts": {
+    "IPFS": "/ipfs",
+    "IPNS": "/ipns",
+    "FuseAllowOther": false
+  },
+  "Discovery": {
+    "MDNS": {
+      "Enabled": false
+    }
+  },
+  "Routing": {
+    "AcceleratedDHTClient": false,
+    "Routers": null,
+    "Methods": null
+  },
+  "Ipns": {
+    "RepublishPeriod": "",
+    "RecordLifetime": "",
+    "ResolveCacheSize": 128
+  },
+  "Bootstrap": [
+    "/dns4/swarm-agent-bootstrap-1/tcp/4001/p2p/QmbjsCaDngwwTPkmeuRWWRar5GfSqMzgQmbAdksy3UKENW",
+    "/dns4/swarm-agent-bootstrap-2/tcp/4001/p2p/QmVb4HRk3q7HJaMEe4PDTL756t219dqumu798cZ94CmG8M",
+    "/dns4/swarm-agent-bootstrap-3/tcp/4001/p2p/QmZbnUgC8XTyseFZCA7vr819r4iV1dfYF6qeSFXWk1CcXJ",
+    "/dns4/swarm-agent-bootstrap-4/tcp/4001/p2p/Qme8L1SAQH6gZHvoxYxiMTgurK4c2iGBqrURh2SmHmB3vq"
+  ],
+  "Gateway": {
+    "HTTPHeaders": {},
+    "RootRedirect": "",
+    "PathPrefixes": [],
+    "APICommands": [],
+    "NoFetch": false,
+    "NoDNSLink": false,
+    "DeserializedResponses": null,
+    "PublicGateways": null
+  },
+  "API": {
+    "HTTPHeaders": {}
+  },
+  "Swarm": {
+    "AddrFilters": [
+      "/ip4/127.0.0.1/ipcidr/8",
+      "/ip4/10.0.0.0/ipcidr/8",
+      "/ip4/100.64.0.0/ipcidr/10",
+      "/ip4/169.254.0.0/ipcidr/16",
+      "/ip4/172.16.0.0/ipcidr/12",
+      "/ip4/192.0.0.0/ipcidr/24",
+      "/ip4/192.0.2.0/ipcidr/24",
+      "/ip4/192.168.0.0/ipcidr/16",
+      "/ip4/198.18.0.0/ipcidr/15",
+      "/ip4/198.51.100.0/ipcidr/24",
+      "/ip4/203.0.113.0/ipcidr/24",
+      "/ip4/240.0.0.0/ipcidr/4",
+      "/ip6/::1/ipcidr/128",
+      "/ip6/100::/ipcidr/64",
+      "/ip6/2001:2::/ipcidr/48",
+      "/ip6/2001:db8::/ipcidr/32",
+      "/ip6/fc00::/ipcidr/7",
+      "/ip6/fe80::/ipcidr/10"
+    ],
+    "DisableBandwidthMetrics": false,
+    "DisableNatPortMap": false,
+    "RelayClient": {
+      "Enabled": true
+    },
+    "RelayService": {
+      "Enabled": true,
+      "MaxReservations": 2048,
+      "MaxCircuits": 192,
+      "MaxReservationsPerPeer": 32,
+      "MaxReservationsPerIP": 32,
+      "MaxReservationsPerASN": 128
+    },
+    "EnableHolePunching": true,
+    "Transports": {
+      "Network": {},
+      "Security": {},
+      "Multiplexers": {}
+    },
+    "ConnMgr": {},
+    "ResourceMgr": {}
+  },
+  "AutoNAT": {
+    "ServiceMode": "enabled"
+  },
+  "Pubsub": {
+    "Router": "",
+    "DisableSigning": false
+  },
+  "Peering": {
+    "Peers": null
+  },
+  "DNS": {
+    "Resolvers": {}
+  },
+  "Migration": {
+    "DownloadSources": [],
+    "Keep": ""
+  },
+  "Provider": {
+    "Strategy": ""
+  },
+  "Reprovider": {},
+  "Experimental": {
+    "FilestoreEnabled": false,
+    "UrlstoreEnabled": false,
+    "GraphsyncEnabled": false,
+    "Libp2pStreamMounting": false,
+    "P2pHttpProxy": false,
+    "StrategicProviding": false,
+    "OptimisticProvide": false,
+    "OptimisticProvideJobsPoolSize": 0
+  },
+  "Plugins": {
+    "Plugins": null
+  },
+  "Pinning": {
+    "RemoteServices": {}
+  },
+  "Internal": {}
+}
