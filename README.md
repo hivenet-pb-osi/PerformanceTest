@@ -5,9 +5,13 @@ Known Restrictions of the Scope:
 1) Need dev account access of the systems.
 2) Permission from the competitors to run a full scale of competittve performance analysis.
 3) Restricted in the no of calls that can be made to the competitors exposed APIS.
+4) Hive needs a separate test environment to record its pure upload time : Currently a docker based test environment is run for agent and platform inside a hive environment, which allows all the agent and platform apis currently.
+5) Automation scripts could/will be different for different use cases, automated using python 3.11, requests library, and locust for performance effieciency baseline metrics.
+
 Prerequisite:
 1) Executable APIS to test each scenario of the scope.
-2) Token Generation
+2) Clone & run requirements.txt from the CLI `pip3 install -r requirements.txt`
+3) Token Generation for Drop Box
 DROPBOX:
 
 ```    DropboxUserTest(HttpUser):
@@ -22,7 +26,7 @@ DROPBOX:
 ```
 To create these token, a basic dropbox app is needed in order to be able to generate the token.
 and the APIs can be found under the dropbox API documentation section.
-
+Token generation for Hive
 HIVE:
 While in a Hive system, token generation looks a little different. 
 Ensure you have hive-agent running in the background.
